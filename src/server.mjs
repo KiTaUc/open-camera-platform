@@ -3,11 +3,12 @@ import { createCamera } from './camera-registry.mjs';
 import { dashboardHtml } from './dashboard.mjs';
 import { discoverOnvif } from './onvif-discovery.mjs';
 import { RecorderManager } from './recorder-manager.mjs';
+import { FfmpegRecorder } from './ffmpeg-recorder.mjs';
 import { addSegment } from './archive-index.mjs';
 import { appendEvent, normalizeCameraEvent } from './event-log.mjs';
 
 const cameras = [];
-const recorderManager = new RecorderManager();
+const recorderManager = process.env.NODE_ENV === 'test' ? new RecorderManager() : new FfmpegRecorder();
 let archive = [];
 let events = [];
 
