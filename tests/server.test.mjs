@@ -29,8 +29,9 @@ test('создаёт задания записи, сегменты архива 
   const post = (path, body) => fetch(`${origin}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   assert.equal((await post('/api/recordings', { cameraId: 'kitchen', rtspUrl: 'rtsp://192.168.1.40/live', archiveDirectory: '/srv/archive' })).status, 201);
   assert.equal((await post('/api/archive', { cameraId: 'kitchen', relativePath: 'kitchen/a.mp4', startedAt: '2026-08-19T10:00:00Z', endedAt: '2026-08-19T10:05:00Z' })).status, 201);
-  assert.equal((await post('/api/events', { cameraId: 'kitchen', topic: 'MotionAlarm' })).status, 201);
+  assert.equal((await post('/api/events', { cameraId: 'kitchen', topic: 'MotionAlarm', recipientId: 'owner' })).status, 201);
   assert.equal((await (await fetch(`${origin}/api/events`)).json()).length, 1);
+  assert.equal((await (await fetch(`${origin}/api/notifications`)).json()).length, 1);
   await new Promise(resolve => server.close(resolve));
 });
 

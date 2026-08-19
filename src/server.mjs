@@ -9,6 +9,7 @@ import { FfmpegRecorder } from './ffmpeg-recorder.mjs';
 import { LiveStreamer } from './live-streamer.mjs';
 import { addSegment } from './archive-index.mjs';
 import { appendEvent, normalizeCameraEvent } from './event-log.mjs';
+import { createNotification } from './notification-center.mjs';
 
 const cameras = [];
 const recorderManager = process.env.NODE_ENV === 'test' ? new RecorderManager() : new FfmpegRecorder();
@@ -16,6 +17,7 @@ const liveStreamer = new LiveStreamer();
 const streamDirectory = process.env.STREAM_DIRECTORY || path.join(process.cwd(), 'streams');
 let archive = [];
 let events = [];
+let notifications = [];
 
 function json(res, code, value) {
   res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' });
@@ -43,6 +45,7 @@ export function createServer() {
     if (req.method === 'GET' && req.url === '/api/live-streams') return json(res, 200, liveStreamer.list());
     if (req.method === 'GET' && req.url === '/api/archive') return json(res, 200, archive);
     if (req.method === 'GET' && req.url === '/api/events') return json(res, 200, events);
+    if (req.method === 'GET' && req.url === '/api/notifications') return json(res, 200, notifications);
     if (req.method === 'POST' && req.url === '/api/discovery') {
       try { return json(res, 200, { addresses: await discoverOnvif() }); }
       catch (error) { return json(res, 500, { error: 'Не удалось выполнить поиск ONVIF-камер' }); }
@@ -68,7 +71,13 @@ export function createServer() {
     if (req.method === 'POST' && req.url === '/api/events') {
       let body = '';
       for await (const chunk of req) body += chunk;
-      try { const event = normalizeCameraEvent(JSON.parse(body)); events = appendEvent(events, event); return json(res, 201, event); }
+      try {
+        const payload = JSON.parse(body);
+        const event = normalizeCameraEvent(payload);
+        events = appendEvent(events, event);
+        if (payload.recipientId) notifications = [createNotification(event, { recipientId: payload.recipientId }), ...notifications];
+        return json(res, 201, event);
+      }
       catch (error) { return json(res, 400, { error: error instanceof Error ? error.message : 'Не удалось добавить событие' }); }
     }
     if (req.method === 'POST' && req.url === '/api/cameras') {
