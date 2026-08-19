@@ -19,6 +19,7 @@ import { RecordingPolicyRunner } from './recording-policy-runner.mjs';
 import { LocalStateStore } from './local-state-store.mjs';
 import { CameraHealthMonitor } from './camera-health-monitor.mjs';
 import { createArchiveExport } from './archive-export.mjs';
+import { normalizeAnalyticsEvent, searchAnalyticsEvents } from './analytics-events.mjs';
 
 const defaultStreamDirectory = process.env.STREAM_DIRECTORY || path.join(process.cwd(), 'streams');
 const defaultArchiveDirectory = process.env.ARCHIVE_DIRECTORY || path.join(process.cwd(), 'archive');
@@ -181,6 +182,11 @@ export function createServer({
     if (req.method === 'GET' && pathname === '/api/archive/exports') { const access = authorize(req, res, 'archive:view'); if (access) return json(res, 200, exports); return; }
     if (req.method === 'GET' && pathname === '/api/archive/usage') { const access = authorize(req, res, 'archive:view'); if (access) return json(res, 200, summarizeStorage(archive)); return; }
     if (req.method === 'GET' && pathname === '/api/events') { const access = authorize(req, res, 'event:view'); if (access) return json(res, 200, events); return; }
+    if (req.method === 'GET' && pathname === '/api/analytics') {
+      const access = authorize(req, res, 'event:view'); if (!access) return;
+      try { return json(res, 200, searchAnalyticsEvents(events, Object.fromEntries(url.searchParams))); }
+      catch (error) { return json(res, 400, { error: error.message }); }
+    }
     if (req.method === 'GET' && pathname === '/api/notifications') { const access = authorize(req, res, 'notification:view'); if (access) return json(res, 200, notifications); return; }
     if (req.method === 'GET' && pathname === '/api/snapshots') { const access = authorize(req, res, 'snapshot:view'); if (access) return json(res, 200, snapshots.map(snapshot => ({ ...snapshot, url: `/snapshots/${snapshot.relativePath}` }))); return; }
     if (req.method === 'GET' && pathname === '/api/audit') { const access = authorize(req, res, 'audit:view'); if (access) return json(res, 200, audit); return; }
@@ -278,6 +284,16 @@ export function createServer({
         const recording = policyRunner.onEvent(event);
         recordAudit(access.user, 'event.ingest', 'camera', event.cameraId);
         return json(res, 201, { ...event, recording });
+      } catch (error) { return json(res, 400, { error: error.message }); }
+    }
+    if (req.method === 'POST' && pathname === '/api/analytics') {
+      const access = authorize(req, res, 'recording:manage'); if (!access) return;
+      try {
+        const event = normalizeAnalyticsEvent(await readJson(req));
+        if (!cameras.some(camera => camera.id === event.cameraId)) throw new Error('Камера не найдена');
+        events = appendEvent(events, event);
+        recordAudit(access.user, 'analytics.ingest', 'camera', event.cameraId);
+        return json(res, 201, event);
       } catch (error) { return json(res, 400, { error: error.message }); }
     }
     const notificationReadMatch = pathname.match(/^\/api\/notifications\/([a-zA-Z0-9_-]+)\/read$/);

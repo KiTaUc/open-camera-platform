@@ -81,6 +81,13 @@ test('создаёт записи, архив, события и уведомл�
   assert.equal((await indexed.json()).relativePath, 'kitchen/a.mp4');
   assert.equal((await post(origin, '/api/events', { cameraId: 'kitchen', topic: 'MotionAlarm', recipientId: 'owner' }, cookie)).status, 201);
   assert.equal((await (await fetch(`${origin}/api/events`, { headers: { cookie } })).json()).length, 1);
+  const camera = await post(origin, '/api/cameras', { name: 'Коридор', mode: 'rtsp', address: 'rtsp://192.168.1.42/live' }, cookie);
+  const cameraId = (await camera.json()).id;
+  const analytics = await post(origin, '/api/analytics', { cameraId, occurredAt: '2026-08-19T10:03:00Z', objects: [{ classification: 'person', confidence: 0.8 }] }, cookie);
+  assert.equal(analytics.status, 201);
+  const analyticsSearch = await fetch(`${origin}/api/analytics?cameraId=${cameraId}&classification=person`, { headers: { cookie } });
+  assert.equal((await analyticsSearch.json()).total, 1);
+  assert.equal((await post(origin, '/api/analytics', { cameraId: 'missing', objects: [{ classification: 'person' }] }, cookie)).status, 400);
   const notifications = await (await fetch(`${origin}/api/notifications`, { headers: { cookie } })).json();
   assert.equal(notifications.length, 1);
   const read = await post(origin, `/api/notifications/${notifications[0].id}/read`, {}, cookie);
