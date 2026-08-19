@@ -32,3 +32,32 @@ export function summarizeStorage(index) {
     newestAt: ordered.at(-1)?.endedAt ?? null,
   };
 }
+
+function timeBound(value, field) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.valueOf())) throw new Error(`Некорректная дата ${field}`);
+  return parsed;
+}
+
+export function searchArchiveSegments(index, { cameraId, from, to, limit = 50 } = {}) {
+  if (cameraId !== undefined && (typeof cameraId !== 'string' || !cameraId.trim())) throw new Error('Идентификатор камеры для поиска некорректен');
+  const start = timeBound(from, 'начала поиска');
+  const end = timeBound(to, 'окончания поиска');
+  if (start && end && end <= start) throw new Error('Окончание поиска должно быть позже начала');
+  const numericLimit = Number(limit);
+  if (!Number.isInteger(numericLimit) || numericLimit < 1 || numericLimit > 200) throw new Error('Лимит выдачи должен быть целым числом от 1 до 200');
+  const matching = index.filter(segment => {
+    if (cameraId && segment.cameraId !== cameraId) return false;
+    if (start && new Date(segment.endedAt) <= start) return false;
+    if (end && new Date(segment.startedAt) >= end) return false;
+    return true;
+  }).sort((left, right) => right.startedAt.localeCompare(left.startedAt));
+  const segments = matching.slice(0, numericLimit);
+  return {
+    query: { cameraId: cameraId ?? null, from: start?.toISOString() ?? null, to: end?.toISOString() ?? null, limit: numericLimit },
+    total: matching.length,
+    bytes: segments.reduce((sum, segment) => sum + (Number.isFinite(segment.bytes) && segment.bytes > 0 ? segment.bytes : 0), 0),
+    segments,
+  };
+}

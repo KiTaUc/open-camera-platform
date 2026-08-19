@@ -7,7 +7,7 @@ import { discoverOnvif } from './onvif-discovery.mjs';
 import { RecorderManager } from './recorder-manager.mjs';
 import { FfmpegRecorder } from './ffmpeg-recorder.mjs';
 import { LiveStreamer } from './live-streamer.mjs';
-import { addSegment, selectExpiredSegments, summarizeStorage } from './archive-index.mjs';
+import { addSegment, searchArchiveSegments, selectExpiredSegments, summarizeStorage } from './archive-index.mjs';
 import { appendEvent, normalizeCameraEvent } from './event-log.mjs';
 import { createNotification, markRead } from './notification-center.mjs';
 import { createUser, publicUser, verifyPassword } from './user-registry.mjs';
@@ -173,6 +173,11 @@ export function createServer({
     if (req.method === 'GET' && pathname === '/api/recording-policies') { const access = authorize(req, res, 'recording:manage'); if (access) return json(res, 200, policyRunner.list()); return; }
     if (req.method === 'GET' && pathname === '/api/live-streams') { const access = authorize(req, res, 'live:view'); if (access) return json(res, 200, liveStreamer.list()); return; }
     if (req.method === 'GET' && pathname === '/api/archive') { const access = authorize(req, res, 'archive:view'); if (access) return json(res, 200, archive); return; }
+    if (req.method === 'GET' && pathname === '/api/archive/search') {
+      const access = authorize(req, res, 'archive:view'); if (!access) return;
+      try { return json(res, 200, searchArchiveSegments(archive, Object.fromEntries(url.searchParams))); }
+      catch (error) { return json(res, 400, { error: error.message }); }
+    }
     if (req.method === 'GET' && pathname === '/api/archive/exports') { const access = authorize(req, res, 'archive:view'); if (access) return json(res, 200, exports); return; }
     if (req.method === 'GET' && pathname === '/api/archive/usage') { const access = authorize(req, res, 'archive:view'); if (access) return json(res, 200, summarizeStorage(archive)); return; }
     if (req.method === 'GET' && pathname === '/api/events') { const access = authorize(req, res, 'event:view'); if (access) return json(res, 200, events); return; }
