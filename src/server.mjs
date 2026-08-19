@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { createCamera } from './camera-registry.mjs';
 import { dashboardHtml } from './dashboard.mjs';
+import { discoverOnvif } from './onvif-discovery.mjs';
 
 const cameras = [];
 
@@ -16,6 +17,10 @@ export function createServer() {
       return res.end(dashboardHtml);
     }
     if (req.method === 'GET' && req.url === '/api/cameras') return json(res, 200, cameras);
+    if (req.method === 'POST' && req.url === '/api/discovery') {
+      try { return json(res, 200, { addresses: await discoverOnvif() }); }
+      catch (error) { return json(res, 500, { error: 'Не удалось выполнить поиск ONVIF-камер' }); }
+    }
     if (req.method === 'POST' && req.url === '/api/cameras') {
       let body = '';
       for await (const chunk of req) body += chunk;
