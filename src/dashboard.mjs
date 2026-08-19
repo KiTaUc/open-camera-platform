@@ -39,11 +39,11 @@ export const dashboardHtml = `<!doctype html>
         <ul id="policies" class="list"></ul>
       </section>
 
-      <section class="stack" style="margin-top:18px"><div class="row"><div><h2>Камеры</h2><p class="muted">Сетка обновляется локально. HLS проигрывается браузерами с поддержкой HLS; для остальных используйте URL плейлиста через совместимый клиент.</p></div><button id="refresh" class="secondary">Обновить</button></div><div id="camera-grid" class="camera-grid"></div></section>
+      <section class="stack" style="margin-top:18px"><div class="row"><div><h2>Камеры</h2><p class="muted">Сетка обновляется локально. HLS проигрывается браузерами с поддержкой HLS; для остальных используйте URL плейлиста через совместимый клиент.</p></div><div class="controls"><button id="evaluate-health" class="secondary" data-manager>Проверить состояние</button><button id="refresh" class="secondary">Обновить</button></div></div><div id="camera-grid" class="camera-grid"></div></section>
 
       <div class="data-grid">
         <section class="panel"><h2>Активные записи</h2><ul id="recordings" class="list"></ul></section>
-        <section class="panel"><div class="row"><h2>Локальный архив</h2><span id="archive-bytes" class="metric">—</span></div><p id="archive-meta" class="muted"></p><ul id="archive" class="list"></ul><form id="retention-form" class="stack" data-manager style="margin-top:16px"><div class="divider"></div><h3>Очистка по политике хранения</h3><label class="muted">Удалить сегменты, завершившиеся раньше даты <input name="before" type="datetime-local" required></label><label class="muted">Ограничить архив, МиБ (необязательно) <input name="maxMib" type="number" min="0" step="1" placeholder="Например, 10240"></label><label class="checkbox"><input name="confirm" type="checkbox" required><span>Я понимаю, что подходящие файлы локального архива будут удалены без возможности восстановления.</span></label><button class="danger">Применить политику</button></form></section>
+        <section class="panel"><div class="row"><h2>Локальный архив</h2><span id="archive-bytes" class="metric">—</span></div><p id="archive-meta" class="muted"></p><ul id="archive" class="list"></ul><form id="export-form" class="stack" data-manager style="margin-top:16px"><div class="divider"></div><h3>Подготовка локального экспорта</h3><p class="muted">Создаётся манифест сегментов до 24 часов. Видео не отправляется в облако.</p><select id="export-camera" name="cameraId" required></select><label class="muted">Начало <input name="from" type="datetime-local" required></label><label class="muted">Окончание <input name="to" type="datetime-local" required></label><button>Подготовить манифест</button></form><ul id="exports" class="list" data-manager style="margin-top:16px"></ul><form id="retention-form" class="stack" data-manager style="margin-top:16px"><div class="divider"></div><h3>Очистка по политике хранения</h3><label class="muted">Удалить сегменты, завершившиеся раньше даты <input name="before" type="datetime-local" required></label><label class="muted">Ограничить архив, МиБ (необязательно) <input name="maxMib" type="number" min="0" step="1" placeholder="Например, 10240"></label><label class="checkbox"><input name="confirm" type="checkbox" required><span>Я понимаю, что подходящие файлы локального архива будут удалены без возможности восстановления.</span></label><button class="danger">Применить политику</button></form></section>
         <section class="panel"><h2>События</h2><ul id="events" class="list"></ul></section>
         <section id="notification-panel" class="panel hidden"><h2>Уведомления</h2><ul id="notifications" class="list"></ul></section>
         <section id="audit-panel" class="panel hidden"><h2>Аудит действий</h2><ul id="audit" class="list"></ul></section>
@@ -52,7 +52,7 @@ export const dashboardHtml = `<!doctype html>
   </main>
   <script>
     const $ = selector => document.querySelector(selector);
-    const message = $('#message'); let session; let cameras = []; let snapshots = []; let liveStreams = []; let policies = []; let healthChecks = [];
+    const message = $('#message'); let session; let cameras = []; let snapshots = []; let liveStreams = []; let policies = []; let healthChecks = []; let exportsData = [];
     const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
     const formatBytes = bytes => bytes < 1024 ? bytes + ' Б' : bytes < 1048576 ? (bytes / 1024).toFixed(1) + ' КиБ' : (bytes / 1048576).toFixed(1) + ' МиБ';
     const formatDate = value => value ? new Date(value).toLocaleString('ru-RU') : '—';
@@ -83,14 +83,19 @@ export const dashboardHtml = `<!doctype html>
     function updatePolicyFields() {
       const mode = $('#policy-mode').value; $('#policy-start').hidden = mode !== 'schedule'; $('#policy-end').hidden = mode !== 'schedule'; $('#policy-seconds').hidden = mode !== 'event';
     }
+    function renderExportOptions() {
+      const select = $('#export-camera'); const selected = select.value;
+      select.innerHTML = cameras.map(camera => '<option value="' + escapeHtml(camera.id) + '">' + escapeHtml(camera.name) + '</option>').join('') || '<option value="">Добавьте камеру</option>';
+      if ([...select.options].some(option => option.value === selected)) select.value = selected;
+    }
     async function load() {
       message.textContent = '';
       try {
         const core = await Promise.all(['/api/cameras','/api/recordings','/api/live-streams','/api/archive','/api/archive/usage','/api/events','/api/snapshots','/api/health'].map(pathname => api(pathname)));
         [cameras, window.recordingsData, liveStreams, window.archiveData, window.storageData, window.eventsData, snapshots, healthChecks] = core;
-        if (manager()) policies = await api('/api/recording-policies');
+        if (manager()) { policies = await api('/api/recording-policies'); exportsData = await api('/api/archive/exports'); }
         renderCameras();
-        if (manager()) { renderPolicies(); updatePolicyFields(); }
+        if (manager()) { renderPolicies(); renderExportOptions(); updatePolicyFields(); show($('#exports'), exportsData, item => '<li><b>' + escapeHtml(cameras.find(camera => camera.id === item.cameraId)?.name || item.cameraId) + '</b><br><span class="muted">' + formatDate(item.from) + ' — ' + formatDate(item.to) + ' · ' + item.segments.length + ' сегм. · ' + formatBytes(item.bytes) + '</span></li>', 'Экспорт ещё не подготовлен'); }
         show($('#recordings'), window.recordingsData, item => '<li><b>' + escapeHtml(item.cameraId) + '</b><br><span class="muted">' + escapeHtml(item.state) + '</span></li>', 'Нет активных записей');
         $('#archive-bytes').textContent = formatBytes(window.storageData.bytes);
         $('#archive-meta').textContent = window.storageData.segments + ' сегм. · от ' + formatDate(window.storageData.oldestAt) + ' до ' + formatDate(window.storageData.newestAt);
@@ -111,12 +116,14 @@ export const dashboardHtml = `<!doctype html>
     $('#login-form').onsubmit = async event => { event.preventDefault(); $('#auth-error').textContent = ''; try { await sendJson('/api/login', Object.fromEntries(new FormData(event.currentTarget))); await refreshSession(); } catch (error) { $('#auth-error').textContent = error.message; } };
     $('#logout').onclick = async () => { await sendJson('/api/logout', {}); $('#notification-panel').classList.add('hidden'); $('#audit-panel').classList.add('hidden'); await refreshSession(); };
     $('#refresh').onclick = load;
+    $('#evaluate-health').onclick = async event => { event.currentTarget.disabled = true; try { const result = await sendJson('/api/health/evaluate', {}); message.textContent = 'Проверено камер: ' + result.length; await load(); } catch (error) { message.textContent = error.message; } finally { event.currentTarget.disabled = false; } };
     $('#discover').onclick = async event => { event.currentTarget.disabled = true; $('#found').textContent = 'Идёт поиск в локальной сети…'; try { const data = await sendJson('/api/discovery', {}); $('#found').textContent = data.addresses?.length ? 'Найдены службы: ' + data.addresses.join(', ') : 'Совместимые ONVIF-камеры не найдены.'; } catch (error) { $('#found').textContent = error.message; } finally { event.currentTarget.disabled = false; } };
     $('#camera-form').onsubmit = async event => { event.preventDefault(); const form = event.currentTarget; try { await sendJson('/api/cameras', Object.fromEntries(new FormData(form))); form.reset(); await load(); } catch (error) { message.textContent = error.message; } };
     $('#policy-mode').onchange = updatePolicyFields;
     $('#policy-form').onsubmit = async event => { event.preventDefault(); const form = new FormData(event.currentTarget); const mode = form.get('mode'); const payload = { cameraId: form.get('cameraId'), mode }; if (mode === 'schedule') { payload.start = form.get('start'); payload.end = form.get('end'); } if (mode === 'event') payload.postEventSeconds = Number(form.get('postEventSeconds')); try { await sendJson('/api/recording-policies', payload); message.textContent = 'Политика записи сохранена'; await load(); } catch (error) { message.textContent = error.message; } };
     $('#camera-grid').onclick = async event => { const button = event.target.closest('button[data-action]'); if (!button) return; const camera = cameras.find(item => item.id === button.dataset.camera); if (!camera) return; button.disabled = true; try { if (button.dataset.action === 'live') await sendJson('/api/live-streams', { cameraId: camera.id, rtspUrl: camera.address }); else await sendJson('/api/cameras/' + encodeURIComponent(camera.id) + '/snapshot', {}); await load(); } catch (error) { message.textContent = error.message; } finally { button.disabled = false; } };
     $('#retention-form').onsubmit = async event => { event.preventDefault(); const formElement = event.currentTarget; const form = new FormData(formElement); const maxMib = form.get('maxMib'); try { const response = await sendJson('/api/archive/retention', { before: new Date(form.get('before')).toISOString(), maxBytes: maxMib === '' ? undefined : Number(maxMib) * 1024 * 1024, confirm: form.get('confirm') === 'on' }); message.textContent = 'Удалено сегментов: ' + response.removed; formElement.reset(); await load(); } catch (error) { message.textContent = error.message; } };
+    $('#export-form').onsubmit = async event => { event.preventDefault(); const form = new FormData(event.currentTarget); try { const result = await sendJson('/api/archive/exports', { cameraId: form.get('cameraId'), from: new Date(form.get('from')).toISOString(), to: new Date(form.get('to')).toISOString() }); message.textContent = 'Подготовлен манифест: ' + result.segments.length + ' сегм. · ' + formatBytes(result.bytes); await load(); } catch (error) { message.textContent = error.message; } };
     refreshSession().catch(error => { $('#auth-error').textContent = error.message; });
   </script>
 </body>

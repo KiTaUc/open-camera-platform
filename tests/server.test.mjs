@@ -29,7 +29,10 @@ test('не раскрывает данные камер до входа и от�
   assert.equal((await fetch(`${origin}/api/cameras`)).status, 401);
   const response = await fetch(`${origin}/`);
   assert.equal(response.status, 200);
-  assert.match(await response.text(), /Открытая платформа камер/);
+  const html = await response.text();
+  assert.match(html, /Открытая платформа камер/);
+  assert.match(html, /Проверить состояние/);
+  assert.match(html, /Подготовка локального экспорта/);
   await close(server);
 });
 
