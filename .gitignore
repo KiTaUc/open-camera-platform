@@ -1,0 +1,8 @@
+node_modules/
+.env
+archive/
+recordings/
+*.mp4
+*.mkv
+*.ts
+*.log
