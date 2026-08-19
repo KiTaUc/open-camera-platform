@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { readFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { cameraConnectionUrl, createCamera, publicCamera } from './camera-registry.mjs';
 import { dashboardHtml } from './dashboard.mjs';
@@ -18,10 +18,12 @@ import { SnapshotCapturer } from './snapshot-capture.mjs';
 import { RecordingPolicyRunner } from './recording-policy-runner.mjs';
 import { LocalStateStore } from './local-state-store.mjs';
 import { CameraHealthMonitor } from './camera-health-monitor.mjs';
+import { createArchiveExport } from './archive-export.mjs';
 
 const defaultStreamDirectory = process.env.STREAM_DIRECTORY || path.join(process.cwd(), 'streams');
 const defaultArchiveDirectory = process.env.ARCHIVE_DIRECTORY || path.join(process.cwd(), 'archive');
 const defaultSnapshotDirectory = process.env.SNAPSHOT_DIRECTORY || path.join(process.cwd(), 'snapshots');
+const defaultExportDirectory = process.env.EXPORT_DIRECTORY || path.join(process.cwd(), 'exports');
 const sessionSeconds = 28_800;
 
 function json(res, code, value, headers = {}) {
@@ -49,6 +51,7 @@ export function createServer({
   streamDirectory = defaultStreamDirectory,
   archiveDirectory = defaultArchiveDirectory,
   snapshotDirectory = defaultSnapshotDirectory,
+  exportDirectory = defaultExportDirectory,
   dataDirectory = process.env.DATA_DIRECTORY || path.join(process.cwd(), 'data'),
   stateStore = process.env.NODE_ENV === 'test' ? null : new LocalStateStore({ directory: dataDirectory, storageKey: process.env.OCP_STORAGE_KEY }),
   initialUsers = [],
@@ -67,6 +70,7 @@ export function createServer({
   let snapshots = [...(loaded.snapshots ?? [])];
   let audit = [...(loaded.audit ?? [])];
   let healthChecks = [...(loaded.healthChecks ?? [])];
+  let exports = [...(loaded.exports ?? [])];
   const healthMonitor = new CameraHealthMonitor({ probe: healthProbe });
   const policyRunner = new RecordingPolicyRunner({ recorder: recorderManager, getCamera: cameraId => {
     const camera = cameras.find(candidate => candidate.id === cameraId);
@@ -75,7 +79,7 @@ export function createServer({
   const policyInterval = process.env.NODE_ENV === 'test' ? null : setInterval(() => policyRunner.evaluate(), 30_000);
   policyInterval?.unref();
 
-  const persist = () => stateStore?.save({ users, cameras, archive, events, notifications, snapshots, audit, healthChecks, recordingPolicies: policyRunner.persistable() });
+  const persist = () => stateStore?.save({ users, cameras, archive, events, notifications, snapshots, audit, healthChecks, exports, recordingPolicies: policyRunner.persistable() });
   const recordAudit = (user, action, targetType, targetId) => { audit = appendAudit(audit, { actorId: user.id, action, targetType, targetId }); persist(); };
   const findAccess = (req, permission) => {
     const token = parseCookies(req.headers.cookie).ocp_session;
@@ -169,6 +173,7 @@ export function createServer({
     if (req.method === 'GET' && pathname === '/api/recording-policies') { const access = authorize(req, res, 'recording:manage'); if (access) return json(res, 200, policyRunner.list()); return; }
     if (req.method === 'GET' && pathname === '/api/live-streams') { const access = authorize(req, res, 'live:view'); if (access) return json(res, 200, liveStreamer.list()); return; }
     if (req.method === 'GET' && pathname === '/api/archive') { const access = authorize(req, res, 'archive:view'); if (access) return json(res, 200, archive); return; }
+    if (req.method === 'GET' && pathname === '/api/archive/exports') { const access = authorize(req, res, 'archive:view'); if (access) return json(res, 200, exports); return; }
     if (req.method === 'GET' && pathname === '/api/archive/usage') { const access = authorize(req, res, 'archive:view'); if (access) return json(res, 200, summarizeStorage(archive)); return; }
     if (req.method === 'GET' && pathname === '/api/events') { const access = authorize(req, res, 'event:view'); if (access) return json(res, 200, events); return; }
     if (req.method === 'GET' && pathname === '/api/notifications') { const access = authorize(req, res, 'notification:view'); if (access) return json(res, 200, notifications); return; }
@@ -230,6 +235,17 @@ export function createServer({
         return json(res, 201, segment);
       }
       catch (error) { return json(res, 400, { error: error.message }); }
+    }
+    if (req.method === 'POST' && pathname === '/api/archive/exports') {
+      const access = authorize(req, res, 'archive:manage'); if (!access) return;
+      try {
+        const prepared = createArchiveExport(archive, await readJson(req));
+        await mkdir(exportDirectory, { recursive: true });
+        await writeFile(path.join(exportDirectory, `${prepared.id}.json`), JSON.stringify(prepared, null, 2), { mode: 0o600 });
+        exports = [prepared, ...exports].slice(0, 100);
+        recordAudit(access.user, 'archive.export.prepare', 'export', prepared.id);
+        return json(res, 201, prepared);
+      } catch (error) { return json(res, 400, { error: error.message }); }
     }
     if (req.method === 'POST' && pathname === '/api/archive/retention') {
       const access = authorize(req, res, 'archive:manage'); if (!access) return;

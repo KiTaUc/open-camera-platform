@@ -80,6 +80,9 @@ test('создаёт записи, архив, события и уведомл�
   assert.equal((await (await fetch(`${origin}/api/events`, { headers: { cookie } })).json()).length, 1);
   assert.equal((await (await fetch(`${origin}/api/notifications`, { headers: { cookie } })).json()).length, 1);
   assert.equal((await (await fetch(`${origin}/api/archive/usage`, { headers: { cookie } })).json()).bytes, 40);
+  const exported = await post(origin, '/api/archive/exports', { cameraId: 'kitchen', from: '2026-08-19T09:59:00Z', to: '2026-08-19T10:06:00Z' }, cookie);
+  assert.equal(exported.status, 201);
+  assert.equal((await exported.json()).segments.length, 1);
   await close(server);
 });
 
