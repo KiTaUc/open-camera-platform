@@ -81,7 +81,10 @@ test('создаёт записи, архив, события и уведомл�
   assert.equal((await indexed.json()).relativePath, 'kitchen/a.mp4');
   assert.equal((await post(origin, '/api/events', { cameraId: 'kitchen', topic: 'MotionAlarm', recipientId: 'owner' }, cookie)).status, 201);
   assert.equal((await (await fetch(`${origin}/api/events`, { headers: { cookie } })).json()).length, 1);
-  assert.equal((await (await fetch(`${origin}/api/notifications`, { headers: { cookie } })).json()).length, 1);
+  const notifications = await (await fetch(`${origin}/api/notifications`, { headers: { cookie } })).json();
+  assert.equal(notifications.length, 1);
+  const read = await post(origin, `/api/notifications/${notifications[0].id}/read`, {}, cookie);
+  assert.equal((await read.json()).readAt !== null, true);
   assert.equal((await (await fetch(`${origin}/api/archive/usage`, { headers: { cookie } })).json()).bytes, 40);
   const exported = await post(origin, '/api/archive/exports', { cameraId: 'kitchen', from: '2026-08-19T09:59:00Z', to: '2026-08-19T10:06:00Z' }, cookie);
   assert.equal(exported.status, 201);

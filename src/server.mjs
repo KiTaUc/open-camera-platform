@@ -9,7 +9,7 @@ import { FfmpegRecorder } from './ffmpeg-recorder.mjs';
 import { LiveStreamer } from './live-streamer.mjs';
 import { addSegment, selectExpiredSegments, summarizeStorage } from './archive-index.mjs';
 import { appendEvent, normalizeCameraEvent } from './event-log.mjs';
-import { createNotification } from './notification-center.mjs';
+import { createNotification, markRead } from './notification-center.mjs';
 import { createUser, publicUser, verifyPassword } from './user-registry.mjs';
 import { requirePermission } from './access-control.mjs';
 import { SessionStore, parseCookies, sessionCookie } from './session-store.mjs';
@@ -271,6 +271,15 @@ export function createServer({
         recordAudit(access.user, 'event.ingest', 'camera', event.cameraId);
         return json(res, 201, { ...event, recording });
       } catch (error) { return json(res, 400, { error: error.message }); }
+    }
+    const notificationReadMatch = pathname.match(/^\/api\/notifications\/([a-zA-Z0-9_-]+)\/read$/);
+    if (req.method === 'POST' && notificationReadMatch) {
+      const access = authorize(req, res, 'notification:view'); if (!access) return;
+      const notification = notifications.find(candidate => candidate.id === notificationReadMatch[1]);
+      if (!notification) return json(res, 404, { error: 'Уведомление не найдено' });
+      notifications = markRead(notifications, notification.id);
+      recordAudit(access.user, 'notification.read', 'notification', notification.id);
+      return json(res, 200, notifications.find(candidate => candidate.id === notification.id));
     }
     if (req.method === 'POST' && pathname === '/api/cameras') {
       const access = authorize(req, res, 'camera:manage'); if (!access) return;
