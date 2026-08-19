@@ -17,6 +17,7 @@ import { appendAudit } from './audit-log.mjs';
 import { SnapshotCapturer } from './snapshot-capture.mjs';
 import { RecordingPolicyRunner } from './recording-policy-runner.mjs';
 import { LocalStateStore } from './local-state-store.mjs';
+import { CameraHealthMonitor } from './camera-health-monitor.mjs';
 
 const defaultStreamDirectory = process.env.STREAM_DIRECTORY || path.join(process.cwd(), 'streams');
 const defaultArchiveDirectory = process.env.ARCHIVE_DIRECTORY || path.join(process.cwd(), 'archive');
@@ -53,6 +54,7 @@ export function createServer({
   initialUsers = [],
   sessions = new SessionStore(),
   snapshotCapturer = new SnapshotCapturer(),
+  healthProbe,
 } = {}) {
   const loaded = stateStore?.load() ?? {};
   const cameras = [...(loaded.cameras ?? [])];
@@ -64,6 +66,8 @@ export function createServer({
   let notifications = [...(loaded.notifications ?? [])];
   let snapshots = [...(loaded.snapshots ?? [])];
   let audit = [...(loaded.audit ?? [])];
+  let healthChecks = [...(loaded.healthChecks ?? [])];
+  const healthMonitor = new CameraHealthMonitor({ probe: healthProbe });
   const policyRunner = new RecordingPolicyRunner({ recorder: recorderManager, getCamera: cameraId => {
     const camera = cameras.find(candidate => candidate.id === cameraId);
     return camera ? { ...camera, address: cameraConnectionUrl(camera) } : null;
@@ -71,7 +75,7 @@ export function createServer({
   const policyInterval = process.env.NODE_ENV === 'test' ? null : setInterval(() => policyRunner.evaluate(), 30_000);
   policyInterval?.unref();
 
-  const persist = () => stateStore?.save({ users, cameras, archive, events, notifications, snapshots, audit, recordingPolicies: policyRunner.persistable() });
+  const persist = () => stateStore?.save({ users, cameras, archive, events, notifications, snapshots, audit, healthChecks, recordingPolicies: policyRunner.persistable() });
   const recordAudit = (user, action, targetType, targetId) => { audit = appendAudit(audit, { actorId: user.id, action, targetType, targetId }); persist(); };
   const findAccess = (req, permission) => {
     const token = parseCookies(req.headers.cookie).ocp_session;
@@ -170,6 +174,13 @@ export function createServer({
     if (req.method === 'GET' && pathname === '/api/notifications') { const access = authorize(req, res, 'notification:view'); if (access) return json(res, 200, notifications); return; }
     if (req.method === 'GET' && pathname === '/api/snapshots') { const access = authorize(req, res, 'snapshot:view'); if (access) return json(res, 200, snapshots.map(snapshot => ({ ...snapshot, url: `/snapshots/${snapshot.relativePath}` }))); return; }
     if (req.method === 'GET' && pathname === '/api/audit') { const access = authorize(req, res, 'audit:view'); if (access) return json(res, 200, audit); return; }
+    if (req.method === 'GET' && pathname === '/api/health') { const access = authorize(req, res, 'camera:view'); if (access) return json(res, 200, healthChecks); return; }
+    if (req.method === 'POST' && pathname === '/api/health/evaluate') {
+      const access = authorize(req, res, 'camera:manage'); if (!access) return;
+      healthChecks = await healthMonitor.evaluate(cameras, liveStreamer.list());
+      recordAudit(access.user, 'health.evaluate', 'camera', String(healthChecks.length));
+      return json(res, 200, healthChecks);
+    }
     if (req.method === 'POST' && pathname === '/api/discovery') {
       const access = authorize(req, res, 'camera:manage'); if (!access) return;
       try { return json(res, 200, { addresses: await discoverOnvif() }); }

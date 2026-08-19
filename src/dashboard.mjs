@@ -52,7 +52,7 @@ export const dashboardHtml = `<!doctype html>
   </main>
   <script>
     const $ = selector => document.querySelector(selector);
-    const message = $('#message'); let session; let cameras = []; let snapshots = []; let liveStreams = []; let policies = [];
+    const message = $('#message'); let session; let cameras = []; let snapshots = []; let liveStreams = []; let policies = []; let healthChecks = [];
     const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
     const formatBytes = bytes => bytes < 1024 ? bytes + ' Б' : bytes < 1048576 ? (bytes / 1024).toFixed(1) + ' КиБ' : (bytes / 1048576).toFixed(1) + ' МиБ';
     const formatDate = value => value ? new Date(value).toLocaleString('ru-RU') : '—';
@@ -65,11 +65,11 @@ export const dashboardHtml = `<!doctype html>
       if (!cameras.length) { grid.innerHTML = '<div class="panel muted">Камеры ещё не добавлены. Владелец или администратор может добавить совместимое устройство выше.</div>'; return; }
       grid.innerHTML = cameras.map(camera => {
         const snapshot = snapshots.find(item => item.cameraId === camera.id);
-        const live = liveStreams.find(item => item.cameraId === camera.id);
+        const live = liveStreams.find(item => item.cameraId === camera.id); const health = healthChecks.find(item => item.cameraId === camera.id);
         const rtsp = camera.address.startsWith('rtsp:');
         const media = live ? '<video controls muted playsinline src="/streams/' + encodeURIComponent(camera.id) + '/index.m3u8"></video>' : snapshot ? '<img src="' + escapeHtml(snapshot.url) + '?v=' + encodeURIComponent(snapshot.capturedAt) + '" alt="Последний снимок камеры ' + escapeHtml(camera.name) + '">' : '<span class="muted">Нет живого просмотра или снимка</span>';
         const controls = manager() ? (rtsp ? '<div class="controls" style="margin-top:12px"><button data-action="live" data-camera="' + escapeHtml(camera.id) + '" class="secondary">' + (live ? 'HLS запущен' : 'Запустить HLS') + '</button><button data-action="snapshot" data-camera="' + escapeHtml(camera.id) + '" class="secondary">Снимок</button></div>' : '<p class="notice">Для HLS и снимка нужен RTSP-адрес профиля камеры.</p>') : '';
-        return '<article class="camera-card"><div class="thumb">' + media + '<span class="status">' + escapeHtml(camera.status) + '</span></div><div class="camera-body"><h3>' + escapeHtml(camera.name) + '</h3><p class="muted">' + escapeHtml(camera.mode.toUpperCase()) + ' · ' + escapeHtml(camera.address) + '</p>' + (live ? '<p class="muted">HLS: запущен ' + formatDate(live.startedAt) + '</p>' : '') + (snapshot ? '<p class="muted">Снимок: ' + formatDate(snapshot.capturedAt) + '</p>' : '') + controls + '</div></article>';
+        return '<article class="camera-card"><div class="thumb">' + media + '<span class="status">' + escapeHtml(health?.state || camera.status) + '</span></div><div class="camera-body"><h3>' + escapeHtml(camera.name) + '</h3><p class="muted">' + escapeHtml(camera.mode.toUpperCase()) + ' · ' + escapeHtml(camera.address) + '</p>' + (health ? '<p class="muted">Проверка: ' + escapeHtml(health.detail || health.state) + ' · ' + formatDate(health.checkedAt) + '</p>' : '') + (live ? '<p class="muted">HLS: запущен ' + formatDate(live.startedAt) + '</p>' : '') + (snapshot ? '<p class="muted">Снимок: ' + formatDate(snapshot.capturedAt) + '</p>' : '') + controls + '</div></article>';
       }).join('');
     }
     function renderPolicies() {
@@ -86,8 +86,8 @@ export const dashboardHtml = `<!doctype html>
     async function load() {
       message.textContent = '';
       try {
-        const core = await Promise.all(['/api/cameras','/api/recordings','/api/live-streams','/api/archive','/api/archive/usage','/api/events','/api/snapshots'].map(pathname => api(pathname)));
-        [cameras, window.recordingsData, liveStreams, window.archiveData, window.storageData, window.eventsData, snapshots] = core;
+        const core = await Promise.all(['/api/cameras','/api/recordings','/api/live-streams','/api/archive','/api/archive/usage','/api/events','/api/snapshots','/api/health'].map(pathname => api(pathname)));
+        [cameras, window.recordingsData, liveStreams, window.archiveData, window.storageData, window.eventsData, snapshots, healthChecks] = core;
         if (manager()) policies = await api('/api/recording-policies');
         renderCameras();
         if (manager()) { renderPolicies(); updatePolicyFields(); }

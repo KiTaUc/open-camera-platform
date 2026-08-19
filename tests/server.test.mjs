@@ -6,8 +6,8 @@ import test from 'node:test';
 import { createServer } from '../src/server.mjs';
 import { LocalStateStore } from '../src/local-state-store.mjs';
 
-async function startServer() {
-  const server = createServer({ snapshotCapturer: { capture: async ({ cameraId }) => ({ cameraId, relativePath: `${cameraId}/fixed.jpg`, capturedAt: '2026-08-19T12:00:00Z', bytes: 123, state: 'captured' }) } });
+async function startServer(options = {}) {
+  const server = createServer({ snapshotCapturer: { capture: async ({ cameraId }) => ({ cameraId, relativePath: `${cameraId}/fixed.jpg`, capturedAt: '2026-08-19T12:00:00Z', bytes: 123, state: 'captured' }) }, ...options });
   await new Promise(resolve => server.listen(0, resolve));
   return { server, origin: `http://127.0.0.1:${server.address().port}` };
 }
@@ -53,6 +53,19 @@ test('роль viewer видит камеры, но не может менять
   const viewerCookie = login.headers.get('set-cookie').split(';')[0];
   assert.equal((await fetch(`${origin}/api/cameras`, { headers: { cookie: viewerCookie } })).status, 200);
   assert.equal((await post(origin, '/api/cameras', { name: 'Гараж', mode: 'rtsp', address: 'rtsp://192.168.1.31/live' }, viewerCookie)).status, 403);
+  await close(server);
+});
+
+test('показывает проверенный локальный статус камеры и защищает запуск проверки', async () => {
+  const { server, origin } = await startServer({ healthProbe: async () => ({ state: 'degraded', detail: 'Высокая задержка' }) });
+  const cookie = await setupOwner(origin);
+  const camera = await post(origin, '/api/cameras', { name: 'Вход', mode: 'rtsp', address: 'rtsp://192.168.1.55/live' }, cookie);
+  const cameraId = (await camera.json()).id;
+  assert.equal((await post(origin, '/api/health/evaluate', {}, cookie)).status, 200);
+  const health = await (await fetch(`${origin}/api/health`, { headers: { cookie } })).json();
+  assert.equal(health[0].cameraId, cameraId);
+  assert.equal(health[0].state, 'degraded');
+  assert.equal((await post(origin, '/api/health/evaluate', {}, '')).status, 401);
   await close(server);
 });
 
