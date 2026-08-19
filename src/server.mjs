@@ -219,8 +219,11 @@ export function createServer({
         const input = await readJson(req);
         const camera = cameras.find(candidate => candidate.id === input.cameraId);
         if (!camera) throw new Error('Камера не найдена');
-        const stream = liveStreamer.start({ cameraId: camera.id, rtspUrl: cameraConnectionUrl(camera), streamDirectory });
-        recordAudit(access.user, 'live.start', 'camera', stream.cameraId);
+        const profileId = typeof input.profileId === 'string' ? input.profileId : 'main';
+        const profile = camera.profiles?.find(candidate => candidate.id === profileId);
+        if (!profile) throw new Error('Профиль потока камеры не найден');
+        const stream = liveStreamer.start({ cameraId: camera.id, profileId, streamId: `${camera.id}-${profile.id}`, rtspUrl: cameraConnectionUrl(camera, profile.id), streamDirectory });
+        recordAudit(access.user, 'live.start', 'camera', `${stream.cameraId}:${profile.id}`);
         return json(res, 201, stream);
       }
       catch (error) { return json(res, 400, { error: error.message }); }
@@ -296,9 +299,13 @@ export function createServer({
       const camera = cameras.find(candidate => candidate.id === snapshotMatch[1]);
       if (!camera) return json(res, 404, { error: 'Камера не найдена' });
       try {
-        const snapshot = await snapshotCapturer.capture({ cameraId: camera.id, rtspUrl: cameraConnectionUrl(camera), snapshotDirectory });
+        const input = await readJson(req);
+        const profileId = typeof input.profileId === 'string' ? input.profileId : 'main';
+        const profile = camera.profiles?.find(candidate => candidate.id === profileId);
+        if (!profile) throw new Error('Профиль потока камеры не найден');
+        const snapshot = await snapshotCapturer.capture({ cameraId: camera.id, rtspUrl: cameraConnectionUrl(camera, profile.id), snapshotDirectory });
         snapshots = [snapshot, ...snapshots];
-        recordAudit(access.user, 'snapshot.capture', 'camera', camera.id);
+        recordAudit(access.user, 'snapshot.capture', 'camera', `${camera.id}:${profile.id}`);
         return json(res, 201, { ...snapshot, url: `/snapshots/${snapshot.relativePath}` });
       } catch (error) { return json(res, 400, { error: error.message }); }
     }

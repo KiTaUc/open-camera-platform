@@ -95,10 +95,13 @@ test('создаёт записи, архив, события и уведомл�
 test('запускает HLS, фиксирует снимок, применяет хранение с подтверждением и ведёт аудит', async () => {
   const { server, origin } = await startServer();
   const cookie = await setupOwner(origin);
-  const camera = await post(origin, '/api/cameras', { name: 'Гараж', mode: 'rtsp', address: 'rtsp://192.168.1.70/live' }, cookie);
+  const camera = await post(origin, '/api/cameras', { name: 'Гараж', mode: 'rtsp', address: 'rtsp://192.168.1.70/live', profiles: [{ id: 'main', label: 'Основной', address: 'rtsp://192.168.1.70/live' }, { id: 'sub', label: 'Экономичный', address: 'rtsp://192.168.1.70/sub' }] }, cookie);
   const cameraId = (await camera.json()).id;
-  assert.equal((await post(origin, '/api/live-streams', { cameraId, rtspUrl: 'rtsp://192.168.1.70/live' }, cookie)).status, 201);
-  const snapshot = await post(origin, `/api/cameras/${cameraId}/snapshot`, {}, cookie);
+  const live = await post(origin, '/api/live-streams', { cameraId, profileId: 'sub' }, cookie);
+  assert.equal(live.status, 201);
+  assert.equal((await live.json()).profileId, 'sub');
+  assert.equal((await post(origin, '/api/live-streams', { cameraId, profileId: 'missing' }, cookie)).status, 400);
+  const snapshot = await post(origin, `/api/cameras/${cameraId}/snapshot`, { profileId: 'sub' }, cookie);
   assert.equal(snapshot.status, 201);
   assert.match((await snapshot.json()).url, /^\/snapshots\//);
   await post(origin, '/api/archive', { cameraId, relativePath: 'garage/a.mp4', startedAt: '2026-07-01T10:00:00Z', endedAt: '2026-07-01T10:05:00Z', bytes: 30 }, cookie);
@@ -106,7 +109,8 @@ test('запускает HLS, фиксирует снимок, применяе�
   const retention = await post(origin, '/api/archive/retention', { before: '2026-08-01T00:00:00Z', confirm: true }, cookie);
   assert.equal((await retention.json()).removed, 1);
   const audit = await fetch(`${origin}/api/audit`, { headers: { cookie } });
-  assert.equal((await audit.json()).some(entry => entry.action === 'snapshot.capture'), true);
+  const auditEntries = await audit.json();
+  assert.equal(auditEntries.some(entry => entry.action === 'snapshot.capture' && entry.targetId === `${cameraId}:sub`), true);
   await close(server);
 });
 
