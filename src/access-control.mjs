@@ -1,7 +1,7 @@
 const permissions = {
-  owner: ['camera:manage', 'recording:manage', 'archive:view', 'event:view', 'user:manage'],
-  admin: ['camera:manage', 'recording:manage', 'archive:view', 'event:view'],
-  viewer: ['archive:view', 'event:view'],
+  owner: ['camera:view', 'camera:manage', 'live:view', 'snapshot:view', 'snapshot:capture', 'recording:manage', 'archive:view', 'archive:manage', 'event:view', 'notification:view', 'ptz:control', 'user:manage', 'audit:view'],
+  admin: ['camera:view', 'camera:manage', 'live:view', 'snapshot:view', 'snapshot:capture', 'recording:manage', 'archive:view', 'archive:manage', 'event:view', 'notification:view', 'ptz:control'],
+  viewer: ['camera:view', 'live:view', 'snapshot:view', 'archive:view', 'event:view'],
 };
 
 export function can(role, permission) {

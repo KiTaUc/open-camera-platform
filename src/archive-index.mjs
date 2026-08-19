@@ -10,6 +10,7 @@ export function addSegment(index, segment) {
 export function selectExpiredSegments(index, { before, maxBytes = Infinity }) {
   const cutoff = new Date(before);
   if (Number.isNaN(cutoff.valueOf())) throw new Error('Некорректная дата политики хранения');
+  if (maxBytes !== Infinity && (!Number.isFinite(maxBytes) || maxBytes < 0)) throw new Error('Лимит хранилища должен быть неотрицательным числом');
   const ordered = [...index].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
   let total = ordered.reduce((sum, segment) => sum + (segment.bytes || 0), 0);
   const expired = [];
@@ -20,4 +21,14 @@ export function selectExpiredSegments(index, { before, maxBytes = Infinity }) {
     }
   }
   return expired;
+}
+
+export function summarizeStorage(index) {
+  const ordered = [...index].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+  return {
+    segments: ordered.length,
+    bytes: ordered.reduce((sum, segment) => sum + (Number.isFinite(segment.bytes) && segment.bytes > 0 ? segment.bytes : 0), 0),
+    oldestAt: ordered.at(0)?.startedAt ?? null,
+    newestAt: ordered.at(-1)?.endedAt ?? null,
+  };
 }

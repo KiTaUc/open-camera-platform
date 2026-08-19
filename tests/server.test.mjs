@@ -2,44 +2,84 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from '../src/server.mjs';
 
-test('добавляет камеру через локальный API и возвращает список', async () => {
-  const server = createServer();
+async function startServer() {
+  const server = createServer({ snapshotCapturer: { capture: async ({ cameraId }) => ({ cameraId, relativePath: `${cameraId}/fixed.jpg`, capturedAt: '2026-08-19T12:00:00Z', bytes: 123, state: 'captured' }) } });
   await new Promise(resolve => server.listen(0, resolve));
-  const origin = `http://127.0.0.1:${server.address().port}`;
-  const created = await fetch(`${origin}/api/cameras`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Двор', mode: 'rtsp', address: 'rtsp://192.168.1.30/live' }) });
-  assert.equal(created.status, 201);
-  const list = await fetch(`${origin}/api/cameras`);
-  assert.equal((await list.json()).length, 1);
-  await new Promise(resolve => server.close(resolve));
-});
+  return { server, origin: `http://127.0.0.1:${server.address().port}` };
+}
 
-test('отдаёт русскоязычную веб-панель', async () => {
-  const server = createServer();
-  await new Promise(resolve => server.listen(0, resolve));
-  const response = await fetch(`http://127.0.0.1:${server.address().port}/`);
+async function setupOwner(origin) {
+  const response = await fetch(`${origin}/api/setup`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ login: 'owner', password: 'long-safe-owner-password' }) });
+  assert.equal(response.status, 201);
+  return response.headers.get('set-cookie').split(';')[0];
+}
+
+function post(origin, pathname, body, cookie) {
+  return fetch(`${origin}${pathname}`, { method: 'POST', headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) });
+}
+
+async function close(server) { await new Promise(resolve => server.close(resolve)); }
+
+test('не раскрывает данные камер до входа и отдаёт русскоязычную панель', async () => {
+  const { server, origin } = await startServer();
+  assert.equal((await fetch(`${origin}/api/cameras`)).status, 401);
+  const response = await fetch(`${origin}/`);
   assert.equal(response.status, 200);
   assert.match(await response.text(), /Открытая платформа камер/);
-  await new Promise(resolve => server.close(resolve));
+  await close(server);
 });
 
-test('создаёт задания записи, сегменты архива и события через API', async () => {
-  const server = createServer();
-  await new Promise(resolve => server.listen(0, resolve));
-  const origin = `http://127.0.0.1:${server.address().port}`;
-  const post = (path, body) => fetch(`${origin}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  assert.equal((await post('/api/recordings', { cameraId: 'kitchen', rtspUrl: 'rtsp://192.168.1.40/live', archiveDirectory: '/srv/archive' })).status, 201);
-  assert.equal((await post('/api/archive', { cameraId: 'kitchen', relativePath: 'kitchen/a.mp4', startedAt: '2026-08-19T10:00:00Z', endedAt: '2026-08-19T10:05:00Z' })).status, 201);
-  assert.equal((await post('/api/events', { cameraId: 'kitchen', topic: 'MotionAlarm', recipientId: 'owner' })).status, 201);
-  assert.equal((await (await fetch(`${origin}/api/events`)).json()).length, 1);
-  assert.equal((await (await fetch(`${origin}/api/notifications`)).json()).length, 1);
-  await new Promise(resolve => server.close(resolve));
+test('первый владелец создаёт сессию и добавляет камеру через защищённый API', async () => {
+  const { server, origin } = await startServer();
+  const cookie = await setupOwner(origin);
+  const created = await post(origin, '/api/cameras', { name: 'Двор', mode: 'rtsp', address: 'rtsp://192.168.1.30/live' }, cookie);
+  assert.equal(created.status, 201);
+  const list = await fetch(`${origin}/api/cameras`, { headers: { cookie } });
+  assert.equal((await list.json()).length, 1);
+  const session = await fetch(`${origin}/api/session`, { headers: { cookie } });
+  assert.equal((await session.json()).user.role, 'owner');
+  await close(server);
 });
 
-test('создаёт задание живого HLS-потока через API', async () => {
-  const server = createServer();
-  await new Promise(resolve => server.listen(0, resolve));
-  const origin = `http://127.0.0.1:${server.address().port}`;
-  const result = await fetch(`${origin}/api/live-streams`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cameraId: 'garage', rtspUrl: 'rtsp://192.168.1.70/live', streamDirectory: '/srv/streams' }) });
-  assert.equal(result.status, 201);
-  await new Promise(resolve => server.close(resolve));
+test('роль viewer видит камеры, но не может менять конфигурацию', async () => {
+  const { server, origin } = await startServer();
+  const ownerCookie = await setupOwner(origin);
+  assert.equal((await post(origin, '/api/users', { login: 'viewer', password: 'long-safe-viewer-password', role: 'viewer' }, ownerCookie)).status, 201);
+  const login = await post(origin, '/api/login', { login: 'viewer', password: 'long-safe-viewer-password' });
+  const viewerCookie = login.headers.get('set-cookie').split(';')[0];
+  assert.equal((await fetch(`${origin}/api/cameras`, { headers: { cookie: viewerCookie } })).status, 200);
+  assert.equal((await post(origin, '/api/cameras', { name: 'Гараж', mode: 'rtsp', address: 'rtsp://192.168.1.31/live' }, viewerCookie)).status, 403);
+  await close(server);
+});
+
+test('создаёт записи, архив, события и уведомления от имени владельца', async () => {
+  const { server, origin } = await startServer();
+  const cookie = await setupOwner(origin);
+  assert.equal((await post(origin, '/api/recordings', { cameraId: 'kitchen', rtspUrl: 'rtsp://192.168.1.40/live', archiveDirectory: '/srv/archive' }, cookie)).status, 201);
+  const indexed = await post(origin, '/api/archive', { cameraId: 'kitchen', relativePath: 'kitchen/a.mp4', startedAt: '2026-08-19T10:00:00Z', endedAt: '2026-08-19T10:05:00Z', bytes: 40 }, cookie);
+  assert.equal(indexed.status, 201);
+  assert.equal((await indexed.json()).relativePath, 'kitchen/a.mp4');
+  assert.equal((await post(origin, '/api/events', { cameraId: 'kitchen', topic: 'MotionAlarm', recipientId: 'owner' }, cookie)).status, 201);
+  assert.equal((await (await fetch(`${origin}/api/events`, { headers: { cookie } })).json()).length, 1);
+  assert.equal((await (await fetch(`${origin}/api/notifications`, { headers: { cookie } })).json()).length, 1);
+  assert.equal((await (await fetch(`${origin}/api/archive/usage`, { headers: { cookie } })).json()).bytes, 40);
+  await close(server);
+});
+
+test('запускает HLS, фиксирует снимок, применяет хранение с подтверждением и ведёт аудит', async () => {
+  const { server, origin } = await startServer();
+  const cookie = await setupOwner(origin);
+  const camera = await post(origin, '/api/cameras', { name: 'Гараж', mode: 'rtsp', address: 'rtsp://192.168.1.70/live' }, cookie);
+  const cameraId = (await camera.json()).id;
+  assert.equal((await post(origin, '/api/live-streams', { cameraId, rtspUrl: 'rtsp://192.168.1.70/live' }, cookie)).status, 201);
+  const snapshot = await post(origin, `/api/cameras/${cameraId}/snapshot`, {}, cookie);
+  assert.equal(snapshot.status, 201);
+  assert.match((await snapshot.json()).url, /^\/snapshots\//);
+  await post(origin, '/api/archive', { cameraId, relativePath: 'garage/a.mp4', startedAt: '2026-07-01T10:00:00Z', endedAt: '2026-07-01T10:05:00Z', bytes: 30 }, cookie);
+  assert.equal((await post(origin, '/api/archive/retention', { before: '2026-08-01T00:00:00Z', confirm: false }, cookie)).status, 400);
+  const retention = await post(origin, '/api/archive/retention', { before: '2026-08-01T00:00:00Z', confirm: true }, cookie);
+  assert.equal((await retention.json()).removed, 1);
+  const audit = await fetch(`${origin}/api/audit`, { headers: { cookie } });
+  assert.equal((await audit.json()).some(entry => entry.action === 'snapshot.capture'), true);
+  await close(server);
 });
