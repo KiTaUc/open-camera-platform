@@ -83,3 +83,20 @@ test('запускает HLS, фиксирует снимок, применяе�
   assert.equal((await audit.json()).some(entry => entry.action === 'snapshot.capture'), true);
   await close(server);
 });
+
+test('настраивает непрерывную и событийную политику записи через защищённый API', async () => {
+  const { server, origin } = await startServer();
+  const cookie = await setupOwner(origin);
+  const camera = await post(origin, '/api/cameras', { name: 'Прихожая', mode: 'rtsp', address: 'rtsp://192.168.1.81/live' }, cookie);
+  const cameraId = (await camera.json()).id;
+  const continuous = await post(origin, '/api/recording-policies', { cameraId, mode: 'continuous' }, cookie);
+  assert.equal(continuous.status, 201);
+  assert.equal((await (await fetch(`${origin}/api/recordings`, { headers: { cookie } })).json()).length, 1);
+  const policy = await post(origin, '/api/recording-policies', { cameraId, mode: 'event', postEventSeconds: 30 }, cookie);
+  assert.equal(policy.status, 201);
+  const event = await post(origin, '/api/events', { cameraId, topic: 'MotionAlarm' }, cookie);
+  assert.equal((await event.json()).recording.action, 'started');
+  const list = await fetch(`${origin}/api/recording-policies`, { headers: { cookie } });
+  assert.equal((await list.json())[0].mode, 'event');
+  await close(server);
+});

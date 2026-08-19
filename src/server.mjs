@@ -15,6 +15,7 @@ import { requirePermission } from './access-control.mjs';
 import { SessionStore, parseCookies, sessionCookie } from './session-store.mjs';
 import { appendAudit } from './audit-log.mjs';
 import { SnapshotCapturer } from './snapshot-capture.mjs';
+import { RecordingPolicyRunner } from './recording-policy-runner.mjs';
 
 const defaultStreamDirectory = process.env.STREAM_DIRECTORY || path.join(process.cwd(), 'streams');
 const defaultArchiveDirectory = process.env.ARCHIVE_DIRECTORY || path.join(process.cwd(), 'archive');
@@ -59,6 +60,9 @@ export function createServer({
   let notifications = [];
   let snapshots = [];
   let audit = [];
+  const policyRunner = new RecordingPolicyRunner({ recorder: recorderManager, getCamera: cameraId => cameras.find(camera => camera.id === cameraId), archiveDirectory });
+  const policyInterval = process.env.NODE_ENV === 'test' ? null : setInterval(() => policyRunner.evaluate(), 30_000);
+  policyInterval?.unref();
 
   const recordAudit = (user, action, targetType, targetId) => { audit = appendAudit(audit, { actorId: user.id, action, targetType, targetId }); };
   const findAccess = (req, permission) => {
@@ -76,7 +80,7 @@ export function createServer({
     return access;
   };
 
-  return http.createServer(async (req, res) => {
+  const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const pathname = url.pathname;
     if (req.method === 'GET' && pathname === '/') {
@@ -150,6 +154,7 @@ export function createServer({
     }
     if (req.method === 'GET' && pathname === '/api/cameras') { const access = authorize(req, res, 'camera:view'); if (access) return json(res, 200, cameras); return; }
     if (req.method === 'GET' && pathname === '/api/recordings') { const access = authorize(req, res, 'archive:view'); if (access) return json(res, 200, recorderManager.list()); return; }
+    if (req.method === 'GET' && pathname === '/api/recording-policies') { const access = authorize(req, res, 'recording:manage'); if (access) return json(res, 200, policyRunner.list()); return; }
     if (req.method === 'GET' && pathname === '/api/live-streams') { const access = authorize(req, res, 'live:view'); if (access) return json(res, 200, liveStreamer.list()); return; }
     if (req.method === 'GET' && pathname === '/api/archive') { const access = authorize(req, res, 'archive:view'); if (access) return json(res, 200, archive); return; }
     if (req.method === 'GET' && pathname === '/api/archive/usage') { const access = authorize(req, res, 'archive:view'); if (access) return json(res, 200, summarizeStorage(archive)); return; }
@@ -166,6 +171,23 @@ export function createServer({
       const access = authorize(req, res, 'recording:manage'); if (!access) return;
       try { const job = recorderManager.start(await readJson(req)); recordAudit(access.user, 'recording.start', 'camera', job.cameraId); return json(res, 201, job); }
       catch (error) { return json(res, 400, { error: error.message }); }
+    }
+    if (req.method === 'POST' && pathname === '/api/recording-policies') {
+      const access = authorize(req, res, 'recording:manage'); if (!access) return;
+      try {
+        const policy = policyRunner.configure(await readJson(req));
+        const result = policyRunner.evaluate();
+        recordAudit(access.user, 'recording.policy', 'camera', policy.cameraId);
+        return json(res, 201, { policy, result });
+      } catch (error) { return json(res, 400, { error: error.message }); }
+    }
+    if (req.method === 'POST' && pathname === '/api/recording-policies/evaluate') {
+      const access = authorize(req, res, 'recording:manage'); if (!access) return;
+      try {
+        const result = policyRunner.evaluate();
+        recordAudit(access.user, 'recording.policy.evaluate', 'recorder', 'local');
+        return json(res, 200, { result });
+      } catch (error) { return json(res, 400, { error: error.message }); }
     }
     if (req.method === 'POST' && pathname === '/api/live-streams') {
       const access = authorize(req, res, 'camera:manage'); if (!access) return;
@@ -203,8 +225,9 @@ export function createServer({
         const event = normalizeCameraEvent(payload);
         events = appendEvent(events, event);
         if (payload.recipientId) notifications = [createNotification(event, { recipientId: payload.recipientId }), ...notifications];
+        const recording = policyRunner.onEvent(event);
         recordAudit(access.user, 'event.ingest', 'camera', event.cameraId);
-        return json(res, 201, event);
+        return json(res, 201, { ...event, recording });
       } catch (error) { return json(res, 400, { error: error.message }); }
     }
     if (req.method === 'POST' && pathname === '/api/cameras') {
@@ -230,6 +253,8 @@ export function createServer({
     }
     return json(res, 404, { error: 'Маршрут не найден' });
   });
+  server.once('close', () => { if (policyInterval) clearInterval(policyInterval); });
+  return server;
 }
 
 if (process.env.NODE_ENV !== 'test') {

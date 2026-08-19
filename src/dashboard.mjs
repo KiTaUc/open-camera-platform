@@ -33,6 +33,12 @@ export const dashboardHtml = `<!doctype html>
         <form id="camera-form" class="form-grid"><input name="name" placeholder="Название камеры" required><select name="mode"><option value="rtsp">RTSP</option><option value="onvif">ONVIF</option></select><input name="address" placeholder="rtsp://192.168.1.30/live" required><button>Добавить камеру</button></form>
       </section>
 
+      <section id="policy-panel" class="panel stack" data-manager style="margin-top:18px">
+        <div><h2>Политики локальной записи</h2><p class="muted">Непрерывный и плановый режимы пересматриваются сервисом каждые 30 секунд. Событийный режим запускается при поступлении события камеры через локальный API.</p></div>
+        <form id="policy-form" class="form-grid"><select id="policy-camera" name="cameraId" required></select><select id="policy-mode" name="mode"><option value="continuous">Непрерывная</option><option value="schedule">По расписанию</option><option value="event">По событию</option></select><input id="policy-start" name="start" type="time" value="08:00"><input id="policy-end" name="end" type="time" value="20:00"><input id="policy-seconds" name="postEventSeconds" type="number" min="0" max="3600" value="60" placeholder="Секунд после события"><button>Сохранить политику</button></form>
+        <ul id="policies" class="list"></ul>
+      </section>
+
       <section class="stack" style="margin-top:18px"><div class="row"><div><h2>Камеры</h2><p class="muted">Сетка обновляется локально. HLS проигрывается браузерами с поддержкой HLS; для остальных используйте URL плейлиста через совместимый клиент.</p></div><button id="refresh" class="secondary">Обновить</button></div><div id="camera-grid" class="camera-grid"></div></section>
 
       <div class="data-grid">
@@ -46,7 +52,7 @@ export const dashboardHtml = `<!doctype html>
   </main>
   <script>
     const $ = selector => document.querySelector(selector);
-    const message = $('#message'); let session; let cameras = []; let snapshots = []; let liveStreams = [];
+    const message = $('#message'); let session; let cameras = []; let snapshots = []; let liveStreams = []; let policies = [];
     const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
     const formatBytes = bytes => bytes < 1024 ? bytes + ' Б' : bytes < 1048576 ? (bytes / 1024).toFixed(1) + ' КиБ' : (bytes / 1048576).toFixed(1) + ' МиБ';
     const formatDate = value => value ? new Date(value).toLocaleString('ru-RU') : '—';
@@ -66,12 +72,25 @@ export const dashboardHtml = `<!doctype html>
         return '<article class="camera-card"><div class="thumb">' + media + '<span class="status">' + escapeHtml(camera.status) + '</span></div><div class="camera-body"><h3>' + escapeHtml(camera.name) + '</h3><p class="muted">' + escapeHtml(camera.mode.toUpperCase()) + ' · ' + escapeHtml(camera.address) + '</p>' + (live ? '<p class="muted">HLS: запущен ' + formatDate(live.startedAt) + '</p>' : '') + (snapshot ? '<p class="muted">Снимок: ' + formatDate(snapshot.capturedAt) + '</p>' : '') + controls + '</div></article>';
       }).join('');
     }
+    function renderPolicies() {
+      const select = $('#policy-camera'); if (!select) return;
+      const selected = select.value;
+      select.innerHTML = cameras.filter(camera => camera.address.startsWith('rtsp:')).map(camera => '<option value="' + escapeHtml(camera.id) + '">' + escapeHtml(camera.name) + '</option>').join('') || '<option value="">Добавьте RTSP-камеру</option>';
+      if ([...select.options].some(option => option.value === selected)) select.value = selected;
+      const labels = { continuous:'Непрерывная', schedule:'По расписанию', event:'По событию' };
+      show($('#policies'), policies, item => '<li><b>' + escapeHtml(cameras.find(camera => camera.id === item.cameraId)?.name || item.cameraId) + '</b><br><span class="muted">' + labels[item.mode] + (item.mode === 'schedule' ? ' · ' + item.start + '–' + item.end : '') + (item.mode === 'event' ? ' · ещё ' + item.postEventSeconds + ' с после события' : '') + (item.eventUntil ? ' · до ' + formatDate(item.eventUntil) : '') + '</span></li>', 'Политики ещё не заданы');
+    }
+    function updatePolicyFields() {
+      const mode = $('#policy-mode').value; $('#policy-start').hidden = mode !== 'schedule'; $('#policy-end').hidden = mode !== 'schedule'; $('#policy-seconds').hidden = mode !== 'event';
+    }
     async function load() {
       message.textContent = '';
       try {
         const core = await Promise.all(['/api/cameras','/api/recordings','/api/live-streams','/api/archive','/api/archive/usage','/api/events','/api/snapshots'].map(pathname => api(pathname)));
         [cameras, window.recordingsData, liveStreams, window.archiveData, window.storageData, window.eventsData, snapshots] = core;
+        if (manager()) policies = await api('/api/recording-policies');
         renderCameras();
+        if (manager()) { renderPolicies(); updatePolicyFields(); }
         show($('#recordings'), window.recordingsData, item => '<li><b>' + escapeHtml(item.cameraId) + '</b><br><span class="muted">' + escapeHtml(item.state) + '</span></li>', 'Нет активных записей');
         $('#archive-bytes').textContent = formatBytes(window.storageData.bytes);
         $('#archive-meta').textContent = window.storageData.segments + ' сегм. · от ' + formatDate(window.storageData.oldestAt) + ' до ' + formatDate(window.storageData.newestAt);
@@ -94,6 +113,8 @@ export const dashboardHtml = `<!doctype html>
     $('#refresh').onclick = load;
     $('#discover').onclick = async event => { event.currentTarget.disabled = true; $('#found').textContent = 'Идёт поиск в локальной сети…'; try { const data = await sendJson('/api/discovery', {}); $('#found').textContent = data.addresses?.length ? 'Найдены службы: ' + data.addresses.join(', ') : 'Совместимые ONVIF-камеры не найдены.'; } catch (error) { $('#found').textContent = error.message; } finally { event.currentTarget.disabled = false; } };
     $('#camera-form').onsubmit = async event => { event.preventDefault(); const form = event.currentTarget; try { await sendJson('/api/cameras', Object.fromEntries(new FormData(form))); form.reset(); await load(); } catch (error) { message.textContent = error.message; } };
+    $('#policy-mode').onchange = updatePolicyFields;
+    $('#policy-form').onsubmit = async event => { event.preventDefault(); const form = new FormData(event.currentTarget); const mode = form.get('mode'); const payload = { cameraId: form.get('cameraId'), mode }; if (mode === 'schedule') { payload.start = form.get('start'); payload.end = form.get('end'); } if (mode === 'event') payload.postEventSeconds = Number(form.get('postEventSeconds')); try { await sendJson('/api/recording-policies', payload); message.textContent = 'Политика записи сохранена'; await load(); } catch (error) { message.textContent = error.message; } };
     $('#camera-grid').onclick = async event => { const button = event.target.closest('button[data-action]'); if (!button) return; const camera = cameras.find(item => item.id === button.dataset.camera); if (!camera) return; button.disabled = true; try { if (button.dataset.action === 'live') await sendJson('/api/live-streams', { cameraId: camera.id, rtspUrl: camera.address }); else await sendJson('/api/cameras/' + encodeURIComponent(camera.id) + '/snapshot', {}); await load(); } catch (error) { message.textContent = error.message; } finally { button.disabled = false; } };
     $('#retention-form').onsubmit = async event => { event.preventDefault(); const formElement = event.currentTarget; const form = new FormData(formElement); const maxMib = form.get('maxMib'); try { const response = await sendJson('/api/archive/retention', { before: new Date(form.get('before')).toISOString(), maxBytes: maxMib === '' ? undefined : Number(maxMib) * 1024 * 1024, confirm: form.get('confirm') === 'on' }); message.textContent = 'Удалено сегментов: ' + response.removed; formElement.reset(); await load(); } catch (error) { message.textContent = error.message; } };
     refreshSession().catch(error => { $('#auth-error').textContent = error.message; });
