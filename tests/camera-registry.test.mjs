@@ -22,3 +22,10 @@ test('отделяет реквизиты RTSP от публичной моде�
   assert.equal(publicCamera(camera).credentials, undefined);
   assert.equal(cameraConnectionUrl(camera), 'rtsp://operator:secret@192.168.1.27/live');
 });
+
+test('хранит основной и экономичный профили без раскрытия реквизитов в панели', () => {
+  const camera = createCamera({ name: 'Вход', mode: 'rtsp', address: 'rtsp://192.168.1.8/main', profiles: [{ id: 'main', label: 'Основной', address: 'rtsp://operator:secret@192.168.1.8/main' }, { id: 'sub', label: 'Экономичный', address: 'rtsp://operator:secret@192.168.1.8/sub' }] });
+  assert.match(cameraConnectionUrl(camera, 'sub'), /operator:secret@192\.168\.1\.8\/sub/);
+  assert.equal(publicCamera(camera).profiles.length, 2);
+  assert.equal(publicCamera(camera).profiles[1].credentials, undefined);
+});

@@ -60,7 +60,12 @@ export class LocalStateStore {
     const secrets = stored.cameraSecrets && typeof stored.cameraSecrets === 'object' ? stored.cameraSecrets : {};
     return {
       users: cleanList(stored.users),
-      cameras: cleanList(stored.cameras).map(camera => ({ ...camera, credentials: secrets[camera.id] ? this.#open(secrets[camera.id]) : null })),
+      cameras: cleanList(stored.cameras).map(camera => {
+        const secret = secrets[camera.id] ? this.#open(secrets[camera.id]) : null;
+        const credentials = secret?.credentials ?? secret;
+        const profileCredentials = secret?.profileCredentials ?? {};
+        return { ...camera, credentials: credentials ?? null, profiles: cleanList(camera.profiles).map(profile => ({ ...profile, credentials: profileCredentials[profile.id] ?? null })) };
+      }),
       archive: cleanList(stored.archive),
       events: cleanList(stored.events),
       notifications: cleanList(stored.notifications),
@@ -74,9 +79,15 @@ export class LocalStateStore {
     mkdirSync(this.#directory, { recursive: true, mode: 0o700 });
     const cameraSecrets = {};
     const cameras = cleanList(state.cameras).map(camera => {
-      const { credentials, ...publicCamera } = camera;
-      if (credentials?.username || credentials?.password) cameraSecrets[camera.id] = this.#seal(credentials);
-      return publicCamera;
+      const { credentials, profiles = [], ...publicCamera } = camera;
+      const profileCredentials = {};
+      const safeProfiles = cleanList(profiles).map(profile => {
+        const { credentials: profileSecret, ...publicProfile } = profile;
+        if (profileSecret?.username || profileSecret?.password) profileCredentials[profile.id] = profileSecret;
+        return publicProfile;
+      });
+      if (credentials?.username || credentials?.password || Object.keys(profileCredentials).length) cameraSecrets[camera.id] = this.#seal({ credentials: credentials ?? null, profileCredentials });
+      return { ...publicCamera, profiles: safeProfiles };
     });
     const payload = JSON.stringify({
       version: 1,
