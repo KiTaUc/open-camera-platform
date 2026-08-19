@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { createCamera } from './camera-registry.mjs';
+import { cameraConnectionUrl, createCamera, publicCamera } from './camera-registry.mjs';
 import { dashboardHtml } from './dashboard.mjs';
 import { discoverOnvif } from './onvif-discovery.mjs';
 import { RecorderManager } from './recorder-manager.mjs';
@@ -16,6 +16,7 @@ import { SessionStore, parseCookies, sessionCookie } from './session-store.mjs';
 import { appendAudit } from './audit-log.mjs';
 import { SnapshotCapturer } from './snapshot-capture.mjs';
 import { RecordingPolicyRunner } from './recording-policy-runner.mjs';
+import { LocalStateStore } from './local-state-store.mjs';
 
 const defaultStreamDirectory = process.env.STREAM_DIRECTORY || path.join(process.cwd(), 'streams');
 const defaultArchiveDirectory = process.env.ARCHIVE_DIRECTORY || path.join(process.cwd(), 'archive');
@@ -47,24 +48,31 @@ export function createServer({
   streamDirectory = defaultStreamDirectory,
   archiveDirectory = defaultArchiveDirectory,
   snapshotDirectory = defaultSnapshotDirectory,
+  dataDirectory = process.env.DATA_DIRECTORY || path.join(process.cwd(), 'data'),
+  stateStore = process.env.NODE_ENV === 'test' ? null : new LocalStateStore({ directory: dataDirectory, storageKey: process.env.OCP_STORAGE_KEY }),
   initialUsers = [],
   sessions = new SessionStore(),
   snapshotCapturer = new SnapshotCapturer(),
 } = {}) {
-  const cameras = [];
+  const loaded = stateStore?.load() ?? {};
+  const cameras = [...(loaded.cameras ?? [])];
   const recorderManager = process.env.NODE_ENV === 'test' ? new RecorderManager() : new FfmpegRecorder();
   const liveStreamer = new LiveStreamer();
-  const users = [...initialUsers];
-  let archive = [];
-  let events = [];
-  let notifications = [];
-  let snapshots = [];
-  let audit = [];
-  const policyRunner = new RecordingPolicyRunner({ recorder: recorderManager, getCamera: cameraId => cameras.find(camera => camera.id === cameraId), archiveDirectory });
+  const users = loaded.users?.length ? [...loaded.users] : [...initialUsers];
+  let archive = [...(loaded.archive ?? [])];
+  let events = [...(loaded.events ?? [])];
+  let notifications = [...(loaded.notifications ?? [])];
+  let snapshots = [...(loaded.snapshots ?? [])];
+  let audit = [...(loaded.audit ?? [])];
+  const policyRunner = new RecordingPolicyRunner({ recorder: recorderManager, getCamera: cameraId => {
+    const camera = cameras.find(candidate => candidate.id === cameraId);
+    return camera ? { ...camera, address: cameraConnectionUrl(camera) } : null;
+  }, archiveDirectory, initialPolicies: loaded.recordingPolicies ?? [] });
   const policyInterval = process.env.NODE_ENV === 'test' ? null : setInterval(() => policyRunner.evaluate(), 30_000);
   policyInterval?.unref();
 
-  const recordAudit = (user, action, targetType, targetId) => { audit = appendAudit(audit, { actorId: user.id, action, targetType, targetId }); };
+  const persist = () => stateStore?.save({ users, cameras, archive, events, notifications, snapshots, audit, recordingPolicies: policyRunner.persistable() });
+  const recordAudit = (user, action, targetType, targetId) => { audit = appendAudit(audit, { actorId: user.id, action, targetType, targetId }); persist(); };
   const findAccess = (req, permission) => {
     const token = parseCookies(req.headers.cookie).ocp_session;
     const session = sessions.get(token);
@@ -152,7 +160,7 @@ export function createServer({
         return json(res, 201, publicUser(user));
       } catch (error) { return json(res, 400, { error: error.message }); }
     }
-    if (req.method === 'GET' && pathname === '/api/cameras') { const access = authorize(req, res, 'camera:view'); if (access) return json(res, 200, cameras); return; }
+    if (req.method === 'GET' && pathname === '/api/cameras') { const access = authorize(req, res, 'camera:view'); if (access) return json(res, 200, cameras.map(publicCamera)); return; }
     if (req.method === 'GET' && pathname === '/api/recordings') { const access = authorize(req, res, 'archive:view'); if (access) return json(res, 200, recorderManager.list()); return; }
     if (req.method === 'GET' && pathname === '/api/recording-policies') { const access = authorize(req, res, 'recording:manage'); if (access) return json(res, 200, policyRunner.list()); return; }
     if (req.method === 'GET' && pathname === '/api/live-streams') { const access = authorize(req, res, 'live:view'); if (access) return json(res, 200, liveStreamer.list()); return; }
@@ -191,7 +199,14 @@ export function createServer({
     }
     if (req.method === 'POST' && pathname === '/api/live-streams') {
       const access = authorize(req, res, 'camera:manage'); if (!access) return;
-      try { const stream = liveStreamer.start({ ...(await readJson(req)), streamDirectory }); recordAudit(access.user, 'live.start', 'camera', stream.cameraId); return json(res, 201, stream); }
+      try {
+        const input = await readJson(req);
+        const camera = cameras.find(candidate => candidate.id === input.cameraId);
+        if (!camera) throw new Error('Камера не найдена');
+        const stream = liveStreamer.start({ cameraId: camera.id, rtspUrl: cameraConnectionUrl(camera), streamDirectory });
+        recordAudit(access.user, 'live.start', 'camera', stream.cameraId);
+        return json(res, 201, stream);
+      }
       catch (error) { return json(res, 400, { error: error.message }); }
     }
     if (req.method === 'POST' && pathname === '/api/archive') {
@@ -236,7 +251,7 @@ export function createServer({
         const camera = createCamera(await readJson(req));
         cameras.push(camera);
         recordAudit(access.user, 'camera.create', 'camera', camera.id);
-        return json(res, 201, camera);
+        return json(res, 201, publicCamera(camera));
       } catch (error) { return json(res, 400, { error: error.message }); }
     }
     const snapshotMatch = pathname.match(/^\/api\/cameras\/([a-zA-Z0-9_-]+)\/snapshot$/);
@@ -245,7 +260,7 @@ export function createServer({
       const camera = cameras.find(candidate => candidate.id === snapshotMatch[1]);
       if (!camera) return json(res, 404, { error: 'Камера не найдена' });
       try {
-        const snapshot = await snapshotCapturer.capture({ cameraId: camera.id, rtspUrl: camera.address, snapshotDirectory });
+        const snapshot = await snapshotCapturer.capture({ cameraId: camera.id, rtspUrl: cameraConnectionUrl(camera), snapshotDirectory });
         snapshots = [snapshot, ...snapshots];
         recordAudit(access.user, 'snapshot.capture', 'camera', camera.id);
         return json(res, 201, { ...snapshot, url: `/snapshots/${snapshot.relativePath}` });

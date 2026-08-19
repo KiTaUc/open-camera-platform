@@ -9,11 +9,12 @@ export class RecordingPolicyRunner {
   #archiveDirectory;
   #now;
 
-  constructor({ recorder, getCamera, archiveDirectory, now = () => new Date() }) {
+  constructor({ recorder, getCamera, archiveDirectory, initialPolicies = [], now = () => new Date() }) {
     this.#recorder = recorder;
     this.#getCamera = getCamera;
     this.#archiveDirectory = archiveDirectory;
     this.#now = now;
+    for (const policy of initialPolicies) if (policy?.cameraId && policy?.mode) this.#policies.set(policy.cameraId, { ...policy });
   }
 
   configure({ cameraId, ...input }) {
@@ -27,6 +28,8 @@ export class RecordingPolicyRunner {
   }
 
   list() { return [...this.#policies.values()].map(policy => ({ ...policy, eventUntil: this.#eventUntil.get(policy.cameraId)?.toISOString() ?? null })); }
+
+  persistable() { return [...this.#policies.values()].map(policy => ({ ...policy })); }
 
   evaluate({ now = this.#now() } = {}) {
     const results = [];

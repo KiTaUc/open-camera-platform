@@ -1,5 +1,7 @@
 const privateHost = /^(localhost|127\.|0\.0\.0\.0|10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/;
 
+function decode(value) { try { return decodeURIComponent(value); } catch { return value; } }
+
 export function validateCameraInput(input) {
   if (!input?.name?.trim()) throw new Error('Укажите название камеры');
   if (!['onvif', 'rtsp'].includes(input.mode)) throw new Error('Выберите ONVIF или RTSP');
@@ -10,12 +12,27 @@ export function validateCameraInput(input) {
   if (!privateHost.test(address.hostname) && !input.allowRemoteAddress) {
     throw new Error('Для защиты по умолчанию разрешены только адреса локальной сети');
   }
-  return { name: input.name.trim(), mode: input.mode, address: address.toString(), allowRemoteAddress: Boolean(input.allowRemoteAddress) };
+  const credentials = address.username || address.password ? { username: decode(address.username), password: decode(address.password) } : null;
+  address.username = '';
+  address.password = '';
+  return { name: input.name.trim(), mode: input.mode, address: address.toString(), allowRemoteAddress: Boolean(input.allowRemoteAddress), credentials };
 }
 
 export function createCamera(input, now = new Date()) {
   const safe = validateCameraInput(input);
   return { id: crypto.randomUUID(), ...safe, status: 'new', createdAt: now.toISOString() };
+}
+
+export function publicCamera(camera) {
+  const { credentials, ...result } = camera;
+  return result;
+}
+
+export function cameraConnectionUrl(camera) {
+  const address = new URL(camera.address);
+  if (camera.credentials?.username) address.username = camera.credentials.username;
+  if (camera.credentials?.password) address.password = camera.credentials.password;
+  return address.toString();
 }
 
 export function createArchiveSegment(cameraId, startedAt, endedAt, relativePath) {

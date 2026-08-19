@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { createServer } from '../src/server.mjs';
+import { LocalStateStore } from '../src/local-state-store.mjs';
 
 async function startServer() {
   const server = createServer({ snapshotCapturer: { capture: async ({ cameraId }) => ({ cameraId, relativePath: `${cameraId}/fixed.jpg`, capturedAt: '2026-08-19T12:00:00Z', bytes: 123, state: 'captured' }) } });
@@ -99,4 +103,29 @@ test('настраивает непрерывную и событийную по
   const list = await fetch(`${origin}/api/recording-policies`, { headers: { cookie } });
   assert.equal((await list.json())[0].mode, 'event');
   await close(server);
+});
+
+test('восстанавливает локальных пользователей и камеры после перезапуска, не выдавая реквизиты в API', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'ocp-server-state-'));
+  try {
+    const stateStore = new LocalStateStore({ directory, storageKey: 'server-test-state-key' });
+    const first = createServer({ stateStore, snapshotCapturer: { capture: async () => ({}) } });
+    await new Promise(resolve => first.listen(0, resolve));
+    const firstOrigin = `http://127.0.0.1:${first.address().port}`;
+    const cookie = await setupOwner(firstOrigin);
+    const camera = await post(firstOrigin, '/api/cameras', { name: 'Вход', mode: 'rtsp', address: 'rtsp://operator:secret@192.168.1.90/live' }, cookie);
+    assert.equal(camera.status, 201);
+    await close(first);
+    assert.doesNotMatch(readFileSync(path.join(directory, 'platform-state.json'), 'utf8'), /operator|secret/);
+    const second = createServer({ stateStore, snapshotCapturer: { capture: async () => ({}) } });
+    await new Promise(resolve => second.listen(0, resolve));
+    const secondOrigin = `http://127.0.0.1:${second.address().port}`;
+    const login = await post(secondOrigin, '/api/login', { login: 'owner', password: 'long-safe-owner-password' });
+    const newCookie = login.headers.get('set-cookie').split(';')[0];
+    const cameras = await (await fetch(`${secondOrigin}/api/cameras`, { headers: { cookie: newCookie } })).json();
+    assert.equal(cameras.length, 1);
+    assert.equal(cameras[0].address, 'rtsp://192.168.1.90/live');
+    assert.equal(cameras[0].credentials, undefined);
+    await close(second);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
