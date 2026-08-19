@@ -33,3 +33,12 @@ test('создаёт задания записи, сегменты архива 
   assert.equal((await (await fetch(`${origin}/api/events`)).json()).length, 1);
   await new Promise(resolve => server.close(resolve));
 });
+
+test('создаёт задание живого HLS-потока через API', async () => {
+  const server = createServer();
+  await new Promise(resolve => server.listen(0, resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const result = await fetch(`${origin}/api/live-streams`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cameraId: 'garage', rtspUrl: 'rtsp://192.168.1.70/live', streamDirectory: '/srv/streams' }) });
+  assert.equal(result.status, 201);
+  await new Promise(resolve => server.close(resolve));
+});
